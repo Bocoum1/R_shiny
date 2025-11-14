@@ -1,124 +1,82 @@
-# Charger les packages
-library(readr)
+library(tidyr)   
 library(dplyr)
-library(readxl)
+library(readr)
 library(ggplot2)
-library(lubridate)
+library(readxl)      
+library(shiny)       
+library(DT)  
+library(plotly)
+library(shinydashboard)
+library(ggiraph)
+library(ggplot2)
 
-### Importation de fichiers ######
-data_allocine <- read_csv2("data/data_allocine.csv")
-correspondances <- read_excel("data/correspondances_allocine.xlsx") |>
-  rename(nationalite = nationalité)
+# Charger les donnéees
+data_raw <- read_excel("data/Data_Ponant.xlsx")
 
-######## Aperçu variables numériques 
+# ---- Nettoyage Belle-Île ----
+# On garde seulement le total Belle-Île (pas les communes internes)
+data_clean <- data_raw %>%
+  filter(!(Ile == "Belle-Ile" & `Nom commune` != "Belle-Ile"))
 
-summary(data_allocine)
-head(data_allocine)
-glimpse(data_allocine)
+# ---- Transformation en format tidy ----
+# Habitants
+habitants <- data_clean %>%
+  select(Ile, starts_with("Nb d'habitants")) %>%
+  pivot_longer(
+    cols = starts_with("Nb d'habitants"),
+    names_to = "annee",
+    values_to = "habitants"
+  ) %>%
+  mutate(annee = parse_number(annee))
 
-# Nature de l'objet
-class(data_allocine)
+# Résidences secondaires
+resid <- data_clean %>%
+  select(Ile, starts_with("Taux de résidendes secondaires")) %>%
+  pivot_longer(
+    cols = starts_with("Taux de résidendes secondaires"),
+    names_to = "annee",
+    values_to = "taux_resid"
+  ) %>%
+  mutate(annee = parse_number(annee))
 
-# Compter le nombre de films par nationalité
-count(data_allocine, nationalite)
+names(resid)
 
-#####  select pour supprimer une variable (colonne)
-select(data_allocine, -recompenses) # ⚠️ ne modifie pas en place si pas sauvegardé
+# mettre la colonne 2023 en numeric
+data_clean <- data_clean %>%
+  mutate(`Prix médian du bâti au m2 (2023)` = as.numeric(`Prix médian du bâti au m2 (2023)`))
 
-#### filter permet de sélectionner des lignes via une condition  #####
-# Ne garder que les longs métrages:
-# filter(data_allocine, type_film == "long-metrage")
+str(data_clean)
 
-# Vérification :
-count(data_allocine, type_film)
-
-# Rename : renommer (titre en titre_film)
-rename(data_allocine, titre_film = titre)
-
-# La fonction arrange pour trier
-arrange(data_allocine, id_film)
-
-# Le pipe
-data_allocine |>
-  filter(nationalite == "italien") |>
-  arrange(desc(duree)) |>
-  head(3)
-
-# Tous les films français ayant une note presse supérieure à 4
-# Trier par ordre croissant et exporter
-data_allocine |>
-  filter(nationalite == 'français', note_presse > 4) |>
-  arrange(note_presse) |>
-  select(titre, note_presse) |>
-  write_csv2("liste_bons_films_français.csv")
-
-# Jointure
-data_allocine |>
-  left_join(correspondances, by = "nationalite")
-
-# Combien de films de drame en Europe de l'ouest et en Europe de l'est
-data_allocine <- data_allocine |>
-  left_join(correspondances, by = "nationalite")
-
-count(data_allocine, region)
-
-# summarize : moyenne des notes
-data_allocine |>
-  summarize(
-    moyenne_presse = mean(note_presse, na.rm = TRUE),
-    moyenne_spectateurs = mean(note_spectateurs, na.rm = TRUE)
-  )
-
-# group_by + summarize : calcul par groupe
-data_allocine |>
-  left_join(correspondances, by = "nationalite") |>
-  filter(region == "Europe de l'ouest") |>
-  group_by(genre) |>
-  summarize(
-    n = n(),
-    durée_moyenne = mean(duree, na.rm = TRUE)
-  ) |>
-  arrange(desc(n)) |>
-  head(5)
-
-# Mutate : créer une nouvelle colonne
-data_allocine <- data_allocine |>
+# Prix m2
+prix <- data_clean %>%
+  select(Ile, starts_with("Prix médian du bâti au m2 (")) %>%
+  pivot_longer(
+    cols = starts_with("Prix médian du bâti au m2 ("),
+    names_to = "annee",
+    values_to = "prix_m2"
+  ) %>%
   mutate(
-    note_globale = note_presse + note_spectateurs
+    annee = gsub("m2", "", annee),
+    annee = parse_number(annee)
   )
 
-# Vérification
-data_allocine |>
-  summarize(note_globale = mean(note_globale, na.rm = TRUE))
 
-# Mutate + if_else
-data_allocine <- data_allocine |>
-  mutate(
-    tr_note = if_else(
-      note_globale < 5, "Mauvais film",
-      if_else(note_globale < 6, "Film moyen", "Bon film")
-    )
-  )
+glimpse(prix) 
 
-########## Facteurs et ordre des colonnes
+unique(habitants$annee)
+unique(resid$annee)
+unique(prix$annee)
 
-# Graphique : nombre de films par région
-data_allocine |>
-  filter(!is.na(region)) |>
-  count(region) |>
-  ggplot() +
-  geom_col(aes(x = n, y = region), fill = "royalblue") +
-  labs(title = "Nombre de films par région", x = "Nombre de films", y = "") +
-  theme_minimal()
-
-glimpse(data_allocine)
+# Fusionner les trois indicateurs
+indicateurs <- habitants %>%
+  left_join(resid, by = c("Ile", "annee")) %>%
+  left_join(prix, by = c("Ile", "annee"))
 
 
+indicateurs <- indicateurs %>%
+  filter(!(Ile %in% c("Le Palais", "Bangor", "Locmaria", "Sauzon")))
 
-# Graphique avec DATE : évolution du nombre de films par an
-data_allocine |>
-  mutate(annee_sortie = year(date_sortie)) |>
-  count(annee_sortie) |>
-  ggplot() +
-  geom_line(aes(x = annee_sortie, y = n))
- unique(data_allocine$genre)
+liste_iles <- unique(indicateurs$Ile)
+liste_annees <- sort(unique(indicateurs$annee))
+
+liste_annees
